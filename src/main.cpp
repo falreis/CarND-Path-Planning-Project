@@ -191,15 +191,29 @@ int main() {
 	//started lane
 	int lane = 1;
 
+	//time to change to the next 
+	int wait_to_change_lane = 0;
+
 	//reference velocity
 	double max_vel = 49.5; //mph
 	double curr_vel = 0.0; //mph
 
 	//horizon - distance captured by sensors (in meters)
 	int horizon = 50;
+	int gap_to_change_lane = 2 * horizon;
 
-	h.onMessage([&map_waypoints_x, &map_waypoints_y, &map_waypoints_s, &map_waypoints_dx, &map_waypoints_dy, &lane, &max_vel, &curr_vel, &horizon](
-					uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, uWS::OpCode opCode) 
+	h.onMessage([&map_waypoints_x, 
+				&map_waypoints_y, 
+				&map_waypoints_s, 
+				&map_waypoints_dx, 
+				&map_waypoints_dy, 
+				&lane, 
+				&wait_to_change_lane, 
+				&max_vel, 
+				&curr_vel, 
+				&horizon,
+				&gap_to_change_lane]
+		(uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, uWS::OpCode opCode)
 	{
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -242,9 +256,9 @@ int main() {
 				}
 
 				bool too_close = false;
+				double lane_curr_speed = max_vel;
 
 				//find rev_car to use
-				
 				for(int i=0; i< sensor_fusion.size(); i++){
 					//car is in my current lane
 					float d = sensor_fusion[i][6];
@@ -256,36 +270,57 @@ int main() {
 
 						check_car_s += ((double) prev_size * 0.02 * check_speed); //using previous speed to predict
 
-						if((check_car_s > car_s) && ((check_car_s-car_s) < horizon)){
-							too_close = true;
+						if((check_car_s > car_s) && ((check_car_s-car_s) < gap_to_change_lane))
+						{
+							if(wait_to_change_lane <= 0){
+								//view if left lane is empty, to pass the current car
+								for(int j=0; j< sensor_fusion.size(); j++){
+									float dc = sensor_fusion[j][6];
+
+									int left_lane_ini = (2+(4*(lane-1))+2);
+									int left_lane_end = (2+(4*(lane-1))-2);
+									int right_lane_ini = (2+(4*(lane+1))+2);
+									int right_lane_end = (2+(4*(lane+1))-2);
+									int change_lane = 0;
+
+									//preference to change to left, instead to right
+									if(lane > 0 && (dc < left_lane_ini && dc > left_lane_end)) {
+										change_lane = -1;
+									}
+									else if(lane < 2 && (dc < right_lane_ini && dc > right_lane_end)){
+										change_lane = 1;
+									}
+									
+									//if car should change lane
+									if(change_lane != 0){
+										lane += change_lane;
+										too_close = false;
+										wait_to_change_lane = horizon;
+										lane_curr_speed = max_vel;
+										curr_vel -= .448;
+										cout<<"Current Lane: "<< lane << std::endl;
+										break;
+									}
+									else{	//can't change because all lanes are full (not safe to change)
+										too_close = true;
+										lane_curr_speed = check_speed;
+									}
+								}
+							}
+							else{
+								wait_to_change_lane--;
+								too_close = true;
+								lane_curr_speed = check_speed;
+							}
 						}
 					}
 				}
 
-				if(too_close){
-					curr_vel -= .4; //.224;	//5 m/(s^2)
-
-					//view if left lane is empty, to pass the current car
-					for(int i=0; i< sensor_fusion.size(); i++){
-						float d = sensor_fusion[i][6];
-
-						//preference to change to left, instead to right
-						if(lane > 0 && ((d < (2+(4*(lane-1))+2)) && (d > (2+(4*(lane-1))-2))) ) {
-							lane--;
-							too_close = false;
-							break;
-						}
-						else if(lane < 2 && (d < (2+(4*(lane+1))+2)) && (d > (2+(4*(lane+1))-2))){
-							lane++;
-							too_close = false;
-							break;
-						}
-					}
-
-					cout<<"Current Lane: "<< lane << std::endl;
+				if(too_close && curr_vel > lane_curr_speed){
+					curr_vel -= .448;	//10 m/(s^2)
 				}
 				else if(curr_vel < max_vel){
-					curr_vel += 0.4; //.224;	//5 m/(s^2)
+					curr_vel += 0.448;	//10 m/(s^2)
 				}
 
 				//list of widely spaced (x,y) waypoints
