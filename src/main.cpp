@@ -19,24 +19,6 @@ using namespace plan;
 // for convenience
 using json = nlohmann::json;
 
-struct Vehicle{
-	double vx;
-	double vy;
-	double check_speed;
-	double check_car_s;
-	float d;
-
-	void Fill(nlohmann::basic_json<>::value_type sensor_fusion, int prev_size){
-		vx = sensor_fusion[3];
-		vy = sensor_fusion[4];
-		d = sensor_fusion[6];
-		check_speed = sqrt(pow(vx, 2) + pow(vy,2));
-		check_car_s = sensor_fusion[5];
-
-		check_car_s += ((double) prev_size * 0.02 * check_speed); //using previous speed to predict
-	}
-};
-
 int main() {
 	uWS::Hub h;
 
@@ -78,15 +60,12 @@ int main() {
 	//State machine that controls the vehicle
 	PathPlaning control;
 
-	int wait_to_change_lane = 0;    //time to change to the next 
-
 	h.onMessage([&map_waypoints_x,
 				&map_waypoints_y,
 				&map_waypoints_s,
 				&map_waypoints_dx,
 				&map_waypoints_dy,
-				&control,
-				&wait_to_change_lane]
+				&control]
 		(uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, uWS::OpCode opCode)
 	{
     // "42" at the start of the message means there's a websocket message event.
@@ -104,12 +83,13 @@ int main() {
 				// j[1] is the data JSON object
 
         		// Main car's localization Data
-				double car_x = j[1]["x"];
-				double car_y = j[1]["y"];
-				double car_s = j[1]["s"];
-				double car_d = j[1]["d"];
-				double car_yaw = j[1]["yaw"];
-				double car_speed = j[1]["speed"];
+				Car my_car;
+				my_car.x = j[1]["x"];
+				my_car.y = j[1]["y"];
+				my_car.s = j[1]["s"];
+				my_car.d = j[1]["d"];
+				my_car.yaw = j[1]["yaw"];
+				my_car.speed = j[1]["speed"];
 
 				// Previous path data given to the Planner
 				auto previous_path_x = j[1]["previous_path_x"];
@@ -123,94 +103,33 @@ int main() {
 				auto sensor_fusion = j[1]["sensor_fusion"];
 
 				int prev_size = previous_path_x.size();
-
+				
 				if(prev_size == 0){
 					if(end_path_s > 0){
-						car_s = end_path_s;
+						my_car.s = end_path_s;
 					}
 					control.start();
 				}
-
-				bool too_close = false;
-				double lane_curr_speed = PathPlaning::MAX_VELOCITY;
-
-				//find rev_car to use
-				for(int i=0; i< sensor_fusion.size(); i++){
-					Vehicle vehicle;
-					vehicle.Fill(sensor_fusion[i], prev_size);
-
-					//check car is in my current lane
-					if(control.isItInMyLane(vehicle.d)){
-						if((vehicle.check_car_s > car_s) && ((vehicle.check_car_s-car_s) < control.getGap()))
-						{
-							if(wait_to_change_lane <= 0){
-								//view if left lane is empty, to pass the current car
-								for(int j=0; j< sensor_fusion.size(); j++){
-									float dc = sensor_fusion[j][6];
-									int lane = control.getLane();
-
-									int left_lane_ini = (2+(4*(lane-1))+2);
-									int left_lane_end = (2+(4*(lane-1))-2);
-									int right_lane_ini = (2+(4*(lane+1))+2);
-									int right_lane_end = (2+(4*(lane+1))-2);
-									int change_lane = 0;
-
-									//preference to change to left, instead to right
-									if(lane > 0 && (dc < left_lane_ini && dc > left_lane_end)) {
-										change_lane = -1;
-									}
-									else if(lane < 2 && (dc < right_lane_ini && dc > right_lane_end)){
-										change_lane = 1;
-									}
-
-									//if car should change lane
-									if(change_lane != 0){
-										lane += change_lane;
-										too_close = false;
-										wait_to_change_lane = PathPlaning::HORIZON;
-										lane_curr_speed = PathPlaning::MAX_VELOCITY;
-										control.decreaseVelocity();
-										cout<<"Current Lane: "<< control.getLane() << std::endl;
-										break;
-									}
-									else{	//can't change because all lanes are full (not safe to change)
-										too_close = true;
-										lane_curr_speed = vehicle.check_speed;
-									}
-								}
-							}
-							else{
-								wait_to_change_lane--;
-								too_close = true;
-								lane_curr_speed = vehicle.check_speed;
-							}
-						}
-					}
-				}
-
-				//actions for too close vehicles
-				if(too_close && control.getVelocity() > lane_curr_speed){
-					control.decreaseVelocity();
-				}
-				else if(control.getVelocity() < PathPlaning::MAX_VELOCITY){
-					control.increaseVelocity();
-				}
+				
+				control.setPosition(my_car);
+				control.checkLane(sensor_fusion, prev_size);
+				control.doActions();
 
 				//list of widely spaced (x,y) waypoints
 				vector<double> ptsx, ptsy;
 
 				//reference x, y and yaw states
-				double ref_x = car_x;
-				double ref_y = car_y;
-				double ref_yaw = deg2rad(car_yaw);
+				double ref_x = my_car.x;
+				double ref_y = my_car.y;
+				double ref_yaw = deg2rad(my_car.yaw);
 
 				//IF without values, add some information, ELSE use previous waypoints
 				if(prev_size < 2){
-					ptsx.push_back(car_x - cos(car_yaw)); //previous car_x point
-					ptsx.push_back(car_x);
+					ptsx.push_back(my_car.x - cos(my_car.yaw)); //previous car_x point
+					ptsx.push_back(my_car.x);
 
-					ptsy.push_back(car_y - sin(car_yaw)); //previous car_y point
-					ptsy.push_back(car_y);
+					ptsy.push_back(my_car.y - sin(my_car.yaw)); //previous car_y point
+					ptsy.push_back(my_car.y);
 				}
 				else{
 					//add x points
@@ -232,9 +151,9 @@ int main() {
 				}
 
 				//points ahead starting reference
-				vector<double> next_wp0 = getXY((car_s + 1*PathPlaning::HORIZON), 2 + (4*control.getLane()), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-				vector<double> next_wp1 = getXY((car_s + 2*PathPlaning::HORIZON), 2 + (4*control.getLane()), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-				vector<double> next_wp2 = getXY((car_s + 3*PathPlaning::HORIZON), 2 + (4*control.getLane()), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+				vector<double> next_wp0 = getXY((my_car.s + 1*PathPlaning::HORIZON), 2 + (4*control.getLane()), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+				vector<double> next_wp1 = getXY((my_car.s + 2*PathPlaning::HORIZON), 2 + (4*control.getLane()), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+				vector<double> next_wp2 = getXY((my_car.s + 3*PathPlaning::HORIZON), 2 + (4*control.getLane()), map_waypoints_s, map_waypoints_x, map_waypoints_y);
 
 				ptsx.push_back(next_wp0[0]);
 				ptsx.push_back(next_wp1[0]);
@@ -299,7 +218,7 @@ int main() {
 
 				auto msg = "42[\"control\","+ msgJson.dump()+"]";
 
-				//this_thread::sleep_for(chrono::milliseconds(1000));
+				this_thread::sleep_for(chrono::milliseconds(100));
 				ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
         	}
 		}
