@@ -124,8 +124,10 @@ namespace help{
 	{
 		int prev_wp = -1;
 
-		while(s > maps_s[prev_wp+1] && (prev_wp < (int)(maps_s.size()-1) )){
-			prev_wp++;
+		if(maps_s.size() > 0){
+			while(s > maps_s[prev_wp+1] && (prev_wp < (int)(maps_s.size()-1) )){
+				prev_wp++;
+			}
 		}
 
 		int wp2 = (prev_wp+1)%maps_x.size();

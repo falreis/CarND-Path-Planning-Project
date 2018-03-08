@@ -10,13 +10,32 @@
 #include "json.hpp"
 #include "spline.h"
 #include "helper.h"
-#include "fsm.h"
+#include "path_planing.h"
 
 using namespace std;
 using namespace help;
+using namespace plan;
 
 // for convenience
 using json = nlohmann::json;
+
+struct Vehicle{
+	double vx;
+	double vy;
+	double check_speed;
+	double check_car_s;
+	float d;
+
+	void Fill(nlohmann::basic_json<>::value_type sensor_fusion, int prev_size){
+		vx = sensor_fusion[3];
+		vy = sensor_fusion[4];
+		d = sensor_fusion[6];
+		check_speed = sqrt(pow(vx, 2) + pow(vy,2));
+		check_car_s = sensor_fusion[5];
+
+		check_car_s += ((double) prev_size * 0.02 * check_speed); //using previous speed to predict
+	}
+};
 
 int main() {
 	uWS::Hub h;
@@ -29,7 +48,8 @@ int main() {
 	vector<double> map_waypoints_dy;
 
 	// Waypoint map to read from
-	string map_file_ = "../data/highway_map.csv";
+	//string map_file_ = "../data/highway_map.csv";
+	string map_file_ = "/home/falreis/Me/self_driving_car/term3/CarND-Path-Planning-Project/data/highway_map.csv";
 	// The max s value before wrapping around the track back to 0
 	double max_s = 6945.554;
 
@@ -55,31 +75,18 @@ int main() {
 		map_waypoints_dy.push_back(d_y);
 	}
 
-	//started lane
-	int lane = 1;
+	//State machine that controls the vehicle
+	PathPlaning control;
 
-	//time to change to the next 
-	int wait_to_change_lane = 0;
+	int wait_to_change_lane = 0;    //time to change to the next 
 
-	//reference velocity
-	double max_vel = 49.5; //mph
-	double curr_vel = 0.0; //mph
-
-	//horizon - distance captured by sensors (in meters)
-	int horizon = 50;
-	int gap_to_change_lane = 2 * horizon;
-
-	h.onMessage([&map_waypoints_x, 
-				&map_waypoints_y, 
-				&map_waypoints_s, 
-				&map_waypoints_dx, 
-				&map_waypoints_dy, 
-				&lane, 
-				&wait_to_change_lane, 
-				&max_vel, 
-				&curr_vel, 
-				&horizon,
-				&gap_to_change_lane]
+	h.onMessage([&map_waypoints_x,
+				&map_waypoints_y,
+				&map_waypoints_s,
+				&map_waypoints_dx,
+				&map_waypoints_dy,
+				&control,
+				&wait_to_change_lane]
 		(uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, uWS::OpCode opCode)
 	{
     // "42" at the start of the message means there's a websocket message event.
@@ -95,7 +102,7 @@ int main() {
         	string event = j[0].get<string>();
         	if (event == "telemetry") {
 				// j[1] is the data JSON object
-          
+
         		// Main car's localization Data
 				double car_x = j[1]["x"];
 				double car_y = j[1]["y"];
@@ -107,7 +114,8 @@ int main() {
 				// Previous path data given to the Planner
 				auto previous_path_x = j[1]["previous_path_x"];
 				auto previous_path_y = j[1]["previous_path_y"];
-				// Previous path's end s and d values 
+
+				// Previous path's end s and d values
 				double end_path_s = j[1]["end_path_s"];
 				double end_path_d = j[1]["end_path_d"];
 
@@ -120,29 +128,26 @@ int main() {
 					if(end_path_s > 0){
 						car_s = end_path_s;
 					}
+					control.start();
 				}
 
 				bool too_close = false;
-				double lane_curr_speed = max_vel;
+				double lane_curr_speed = PathPlaning::MAX_VELOCITY;
 
 				//find rev_car to use
 				for(int i=0; i< sensor_fusion.size(); i++){
-					//car is in my current lane
-					float d = sensor_fusion[i][6];
-					if((d < (2+(4*lane)+2)) && (d > (2+(4*lane)-2))){
-						double vx = sensor_fusion[i][3];
-						double vy = sensor_fusion[i][4];
-						double check_speed = sqrt(pow(vx, 2) + pow(vy,2));
-						double check_car_s = sensor_fusion[i][5];
+					Vehicle vehicle;
+					vehicle.Fill(sensor_fusion[i], prev_size);
 
-						check_car_s += ((double) prev_size * 0.02 * check_speed); //using previous speed to predict
-
-						if((check_car_s > car_s) && ((check_car_s-car_s) < gap_to_change_lane))
+					//check car is in my current lane
+					if(control.isItInMyLane(vehicle.d)){
+						if((vehicle.check_car_s > car_s) && ((vehicle.check_car_s-car_s) < control.getGap()))
 						{
 							if(wait_to_change_lane <= 0){
 								//view if left lane is empty, to pass the current car
 								for(int j=0; j< sensor_fusion.size(); j++){
 									float dc = sensor_fusion[j][6];
+									int lane = control.getLane();
 
 									int left_lane_ini = (2+(4*(lane-1))+2);
 									int left_lane_end = (2+(4*(lane-1))-2);
@@ -157,37 +162,38 @@ int main() {
 									else if(lane < 2 && (dc < right_lane_ini && dc > right_lane_end)){
 										change_lane = 1;
 									}
-									
+
 									//if car should change lane
 									if(change_lane != 0){
 										lane += change_lane;
 										too_close = false;
-										wait_to_change_lane = horizon;
-										lane_curr_speed = max_vel;
-										curr_vel -= .448;
-										cout<<"Current Lane: "<< lane << std::endl;
+										wait_to_change_lane = PathPlaning::HORIZON;
+										lane_curr_speed = PathPlaning::MAX_VELOCITY;
+										control.decreaseVelocity();
+										cout<<"Current Lane: "<< control.getLane() << std::endl;
 										break;
 									}
 									else{	//can't change because all lanes are full (not safe to change)
 										too_close = true;
-										lane_curr_speed = check_speed;
+										lane_curr_speed = vehicle.check_speed;
 									}
 								}
 							}
 							else{
 								wait_to_change_lane--;
 								too_close = true;
-								lane_curr_speed = check_speed;
+								lane_curr_speed = vehicle.check_speed;
 							}
 						}
 					}
 				}
 
-				if(too_close && curr_vel > lane_curr_speed){
-					curr_vel -= .448;	//10 m/(s^2)
+				//actions for too close vehicles
+				if(too_close && control.getVelocity() > lane_curr_speed){
+					control.decreaseVelocity();
 				}
-				else if(curr_vel < max_vel){
-					curr_vel += 0.448;	//10 m/(s^2)
+				else if(control.getVelocity() < PathPlaning::MAX_VELOCITY){
+					control.increaseVelocity();
 				}
 
 				//list of widely spaced (x,y) waypoints
@@ -205,7 +211,7 @@ int main() {
 
 					ptsy.push_back(car_y - sin(car_yaw)); //previous car_y point
 					ptsy.push_back(car_y);
-				} 
+				}
 				else{
 					//add x points
 					ref_x = previous_path_x[prev_size - 1];
@@ -215,8 +221,8 @@ int main() {
 					ptsx.push_back(ref_x);
 
 					//add y points
-					ref_y = previous_path_y[prev_size - 1]; 
-					double prev_ref_y = previous_path_y[prev_size - 2]; 
+					ref_y = previous_path_y[prev_size - 1];
+					double prev_ref_y = previous_path_y[prev_size - 2];
 
 					ptsy.push_back(prev_ref_y);
 					ptsy.push_back(ref_y);
@@ -226,9 +232,9 @@ int main() {
 				}
 
 				//points ahead starting reference
-				vector<double> next_wp0 = getXY((car_s + 1*horizon), 2 + (4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-				vector<double> next_wp1 = getXY((car_s + 2*horizon), 2 + (4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-				vector<double> next_wp2 = getXY((car_s + 3*horizon), 2 + (4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+				vector<double> next_wp0 = getXY((car_s + 1*PathPlaning::HORIZON), 2 + (4*control.getLane()), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+				vector<double> next_wp1 = getXY((car_s + 2*PathPlaning::HORIZON), 2 + (4*control.getLane()), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+				vector<double> next_wp2 = getXY((car_s + 3*PathPlaning::HORIZON), 2 + (4*control.getLane()), map_waypoints_s, map_waypoints_x, map_waypoints_y);
 
 				ptsx.push_back(next_wp0[0]);
 				ptsx.push_back(next_wp1[0]);
@@ -259,15 +265,15 @@ int main() {
 				}
 
 				//use spline to travel at our desired reference velocity
-				double target_x = horizon;
+				double target_x = PathPlaning::HORIZON;
 				double target_y = spl(target_x);
 				double target_dist = sqrt(pow(target_x,2)+pow(target_y,2));
 
 				double x_add_on = 0;	//to use in local transformation - starts with 0
 
 				//fill the rest of the path planner
-				for(int i=1; i<= 50-previous_path_x.size(); i++){
-					double N = (target_dist / (.02 * curr_vel / 2.24)); //2.24 is meters/sec
+				for(int i=1; i<= (PathPlaning::HORIZON-previous_path_x.size()); i++){
+					double N = (target_dist / (.02 * control.getVelocity() / 2.24)); //2.24 is meters/sec
 					double x_point = x_add_on + (target_x / N);
 					double y_point = spl(x_point);
 
@@ -296,7 +302,7 @@ int main() {
 				//this_thread::sleep_for(chrono::milliseconds(1000));
 				ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
         	}
-		} 
+		}
 		else {
 			// Manual driving
 			std::string msg = "42[\"manual\",{}]";
