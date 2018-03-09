@@ -15,16 +15,18 @@ namespace plan{
         double s;
         float d;
         double yaw;
-        double speed;
+        double speed;       //in mps
+        double velocity;    //in mph
 
         void Fill(nlohmann::basic_json<>::value_type sensor_fusion, int prev_size){
-            x = sensor_fusion[3];
-            y = sensor_fusion[4];
-            d = sensor_fusion[6];
-            speed = sqrt(pow(x, 2) + pow(y,2));
+            this->x = sensor_fusion[3];
+            this->y = sensor_fusion[4];
+            this->d = sensor_fusion[6];
+            this->speed = sqrt(pow(x, 2) + pow(y,2));
+            this->velocity = this->speed * 2.23;
             
-            s = sensor_fusion[5];
-            s += ((double) prev_size * 0.02 * speed);
+            this->s = sensor_fusion[5];
+            this->s += ((double) prev_size * 0.02 * this->speed);
         }
     };
 
@@ -62,7 +64,7 @@ namespace plan{
             //start functions
             PathPlaning(){
                 this->lane = 1;
-                this->gap_to_change_lane = 2 * HORIZON;
+                this->gap_to_change_lane = 0.5 * HORIZON;   //gap is in both directions - front and back
                 this->velocity = 0;
 
                 this->too_close = false;
@@ -155,28 +157,17 @@ namespace plan{
                             //if the next car is in front of me
                             if(distance > 0 && distance < PathPlaning::HORIZON)
                             {
-                                if(this->machine.get() == finite_states::LANE_KEEP 
-                                    || this->machine.get() == finite_states::PREPARE_LANE_CHANGE
-                                ){
+                                if(this->machine.get() == finite_states::LANE_KEEP){
                                     this->machine.next();
-                                    this->lane_velocity = next_car.speed;
+                                    this->lane_velocity = next_car.velocity;
+                                    break;
+                                }
+                                else if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE){
+                                    this->lane_velocity = next_car.velocity;
                                     break;
                                 }
                             }
                         }
-                    }
-
-                    //verify if needs to decrease velocity
-                    if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE){
-                        if(this->lane_velocity < this->velocity){  //car is waiting for oportunity to change lane
-                            this->decreaseVelocity();
-                        }
-                        else{
-                            this->increaseVelocity();
-                        }
-                    }
-                    else if(this->machine.get() == finite_states::LANE_KEEP){
-                        this->lane_velocity = PathPlaning::MAX_VELOCITY;
                     }
                     
                     //find possible moves if there is a car in front of my car
@@ -236,6 +227,7 @@ namespace plan{
             void doActions(){
                 switch(this->machine.get()){
                     case finite_states::LANE_KEEP:
+                        this->lane_velocity = PathPlaning::MAX_VELOCITY;
                         if(this->velocity < PathPlaning::MAX_VELOCITY){
                             this->increaseVelocity();
                         }
@@ -248,11 +240,16 @@ namespace plan{
                     case finite_states::LANE_CHANGE_LEFT:
                     case finite_states::LANE_CHANGE_RIGHT:
                         this->machine.next();       //back to lane keep
-                        wait_to_change_lane = 30;   //this->HORIZON;
+                        wait_to_change_lane = 0;   //this->HORIZON;
                         break;
 
                     case finite_states::PREPARE_LANE_CHANGE:
-                        this->decreaseVelocity();
+                        if(this->lane_velocity < this->velocity){  //car is waiting for oportunity to change lane
+                            this->decreaseVelocity();
+                        }
+                        else{
+                            this->increaseVelocity();
+                        }
                         break;
                 }
             }
