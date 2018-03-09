@@ -3,6 +3,8 @@
 
 #include "fsm.h"
 #include "json.hpp"
+#include <cstdio>
+#include <list>
 
 using namespace fsm;
 
@@ -26,10 +28,22 @@ namespace plan{
         }
     };
 
+    struct Move{
+        bool toLeft;
+        double distance;
+
+        Move(){ }
+        Move(bool isleft, double dist){
+            this->toLeft = isleft;
+            this->distance = dist;
+        }
+    };
+
     class PathPlaning{
         private:
             fsm::FSMachine machine;     //state machine
             Car car;                    //current car position
+            list<Move> possible_moves;  //possible lane moves
 
             int lane;                   //started lane
             double velocity;            //current velocity in mph
@@ -37,7 +51,7 @@ namespace plan{
             
             bool too_close;
 			double lane_velocity;
-            int wait_to_change_lane;    //time to change to the next 
+            int wait_to_change_lane;    //time to change to the next
 
         public:
             //constants
@@ -54,6 +68,7 @@ namespace plan{
                 this->too_close = false;
                 this->lane_velocity = PathPlaning::MAX_VELOCITY;
                 this->wait_to_change_lane = 0;
+                possible_moves.clear();
             }
 
             void start(){
@@ -133,53 +148,87 @@ namespace plan{
                     for(int i=0; i< sensor_fusion.size(); i++){
                         Car next_car;
                         next_car.Fill(sensor_fusion[i], prev_size);
+                        double distance = (next_car.s - car.s);
 
                         //check car is in my current lane
                         if(this->isItInMyLane(next_car.d)){
                             //if the next car is in front of me
-                            if((next_car.s > car.s) && ((next_car.s - car.s) < PathPlaning::HORIZON))
+                            if(distance > 0 && distance < PathPlaning::HORIZON)
                             {
-                                if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE){
-                                    this->lane_velocity = next_car.speed; 
-                                }
-                                else if(this->machine.get() == finite_states::LANE_KEEP){
+                                if(this->machine.get() == finite_states::LANE_KEEP 
+                                    || this->machine.get() == finite_states::PREPARE_LANE_CHANGE
+                                ){
                                     this->machine.next();
+                                    this->lane_velocity = next_car.speed;
+                                    break;
                                 }
                             }
                         }
-                        else if(this->isItInMyLeftLane(next_car.d)){
-                            //if car is waiting for change lane, the change it
-                            if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE){
-                                if((next_car.s > car.s) && ((next_car.s - car.s) < this->gap_to_change_lane)){  //if is enough space to change lanes
-                                    if(this->moveToLeft()){ //can move to left
-                                        this->machine.next(finite_states::LANE_CHANGE_LEFT);
-                                        break;
-                                    }
+                    }
+
+                    //verify if needs to decrease velocity
+                    if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE){
+                        if(this->lane_velocity < this->velocity){  //car is waiting for oportunity to change lane
+                            this->decreaseVelocity();
+                        }
+                        else{
+                            this->increaseVelocity();
+                        }
+                    }
+                    else if(this->machine.get() == finite_states::LANE_KEEP){
+                        this->lane_velocity = PathPlaning::MAX_VELOCITY;
+                    }
+                    
+                    //find possible moves if there is a car in front of my car
+                    if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE){
+                        for(int i=0; i< sensor_fusion.size(); i++){
+                            Car next_car;
+                            next_car.Fill(sensor_fusion[i], prev_size);
+                            double distance = (next_car.s - car.s);
+
+                            if(this->isItInMyLeftLane(next_car.d)){
+                                //if car is waiting for change lane, the change it
+                                if(abs(distance) < this->gap_to_change_lane){  //if is not enough space to change lanes
+                                    possible_moves.push_back(Move(true, distance));
                                 }
                             }
-                            //else ignore car on the left
-                        }
-                        else if(this->isItInMyRightLane(next_car.d)){
-                            if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE){
-                                if((next_car.s > car.s) && ((next_car.s - car.s) < this->gap_to_change_lane)){  //if is enough space to change lanes
-                                    if(this->moveToRight()){ //can move to right
-                                        this->machine.next(finite_states::LANE_CHANGE_RIGHT);
-                                        break;
-                                    }
+                            else if(this->isItInMyRightLane(next_car.d)){
+                                if(abs(distance) < this->gap_to_change_lane){  //if is not enough space to change lanes
+                                    possible_moves.push_back(Move(false, distance));
                                 }
                             }
-                            //else ignore car on the left
                         }
-                        
-                        //decrease velocity
-                        if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE){
-                            if(this->lane_velocity < car.speed){  //car is waiting for oportunity to change lane
-                                this->decreaseVelocity();
+                    }
+
+                    //if it's possible some maneuver, prefer left than right
+                    if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE && possible_moves.size() == 0){ //no problems to move
+                        this->machine.next(finite_states::LANE_CHANGE_LEFT);
+                    }
+                    else if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE && possible_moves.size() > 0){
+                        bool can_move_left = true;
+                        bool can_move_right = true;
+
+                        for (list<Move>::iterator it= possible_moves.begin(); it != possible_moves.end(); ++it){
+                            if(it->toLeft) 
+                                can_move_left = false;
+                            else
+                                can_move_right = false;
+                        }
+
+                        //verify if can move left or right then proceed move
+                        if(can_move_left){
+                            if(this->moveToLeft()){     //possible to move left
+                                this->machine.next(finite_states::LANE_CHANGE_LEFT);
                             }
                         }
-                        else if(this->machine.get() == finite_states::LANE_KEEP){
-                            this->lane_velocity = PathPlaning::MAX_VELOCITY;
+                        else if(can_move_right){
+                            if(this->moveToRight()){     //possible to move right
+                                this->machine.next(finite_states::LANE_CHANGE_RIGHT);
+                            }
                         }
+                        //else just decrease velocity
+
+                        possible_moves.clear(); //clean possible maneuvers
                     }
                 }
             }
@@ -198,8 +247,8 @@ namespace plan{
 
                     case finite_states::LANE_CHANGE_LEFT:
                     case finite_states::LANE_CHANGE_RIGHT:
-                        this->machine.next();
-                        wait_to_change_lane = 0;//this->HORIZON;
+                        this->machine.next();       //back to lane keep
+                        wait_to_change_lane = 30;   //this->HORIZON;
                         break;
 
                     case finite_states::PREPARE_LANE_CHANGE:
