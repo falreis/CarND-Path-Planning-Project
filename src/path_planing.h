@@ -30,14 +30,22 @@ namespace plan{
         }
     };
 
+    enum direction{
+        KEEP = 1,
+        LEFT = 2,
+        RIGHT = 3
+    };
+
     struct Move{
-        bool toLeft;
+        direction moveDirection;
         double distance;
+        double velocity;
 
         Move(){ }
-        Move(bool isleft, double dist){
-            this->toLeft = isleft;
+        Move(direction dir, double dist, double vel){
+            this->moveDirection = dir;
             this->distance = dist;
+            this->velocity = vel;
         }
     };
 
@@ -45,7 +53,8 @@ namespace plan{
         private:
             fsm::FSMachine machine;     //state machine
             Car car;                    //current car position
-            list<Move> possible_moves;  //possible lane moves
+            list<Move> unsafe_moves;    //possible lane moves
+            list<Move> front_cars;      //cars in front of my car
 
             int lane;                   //started lane
             double velocity;            //current velocity in mph
@@ -54,23 +63,133 @@ namespace plan{
             bool too_close;
 			double lane_velocity;
             int wait_to_change_lane;    //time to change to the next
+        
+        protected:
+            /* control functions */
+
+            void currentLaneControl(nlohmann::basic_json<>::value_type sensor_fusion, int prev_size){
+                //find other cars using sensors
+                for(int i=0; i< sensor_fusion.size(); i++){
+                    Car next_car;
+                    next_car.Fill(sensor_fusion[i], prev_size);
+                    double distance = (next_car.s - car.s);
+
+                    //check car is in my current lane
+                    if(this->isItInMyLane(next_car.d)){
+                        //if the next car is in front of me
+                        if(distance > 0 && distance < PathPlaning::HORIZON)
+                        {
+                            this->front_cars.push_back(Move(direction::KEEP, distance, next_car.velocity));
+
+                            //prepare to change lane
+                            if(this->machine.get() == finite_states::LANE_KEEP){
+                                this->machine.next();
+                            }
+                        }
+                    }
+                }
+
+                //keep velocity as the same for the next front car
+                Move front_car;
+                front_car.distance = 9999999999;
+                
+                if(front_cars.size() > 0){
+                    for(list<Move>::iterator it=front_cars.begin(); it != front_cars.end(); ++it){
+                        if(it->distance < front_car.distance){
+                            front_car = *it;
+                        }
+                    }
+
+                    //if my car it's too close from the front car, decrease velocity
+                    if(front_car.distance < PathPlaning::HORIZON){
+                        this->decreaseVelocity();
+                        this->lane_velocity = front_car.velocity;
+                    }
+                }
+                else{
+                    this->lane_velocity = PathPlaning::MAX_VELOCITY;
+                }
+                front_cars.clear();
+            }
+
+            void changeLaneControl(nlohmann::basic_json<>::value_type sensor_fusion, int prev_size){
+                //find possible moves if there is a car in front of my car
+                if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE){
+                    for(int i=0; i< sensor_fusion.size(); i++){
+                        Car next_car;
+                        next_car.Fill(sensor_fusion[i], prev_size);
+                        double distance = (next_car.s - car.s);
+
+                        if(this->isItInMyLeftLane(next_car.d)){
+                            if(this->canMoveLeft()){
+                                if(abs(distance) < this->gap_to_change_lane){  //if is not enough space to change lanes
+                                    unsafe_moves.push_back(Move(direction::LEFT, distance, next_car.velocity));
+                                }
+                            }
+                        }
+                        else if(this->isItInMyRightLane(next_car.d)){
+                            if(this->canMoveRight()){
+                                if(abs(distance) < this->gap_to_change_lane){  //if is not enough space to change lanes
+                                    unsafe_moves.push_back(Move(direction::RIGHT, distance, next_car.velocity));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                //if it's possible some maneuver, prefer left than right
+                if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE && unsafe_moves.size() == 0){ //no problems to move
+                    if(this->moveToLeft()){
+                        this->machine.next(finite_states::LANE_CHANGE_LEFT);
+                    }
+                }
+                else if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE && unsafe_moves.size() > 0){
+                    bool go_left = true;
+                    bool go_right = true;
+
+                    for (list<Move>::iterator it= unsafe_moves.begin(); it != unsafe_moves.end(); ++it){
+                        if(it->moveDirection == direction::LEFT) 
+                            go_left = false;
+                        else
+                            go_right = false;
+                    }
+
+                    //verify if can move left or right then proceed move
+                    if(go_left){
+                        if(this->moveToLeft()){     //possible to move left
+                            this->machine.next(finite_states::LANE_CHANGE_LEFT); 
+                        }
+                    }
+                    else if(go_right){
+                        if(this->moveToRight()){     //possible to move right
+                            this->machine.next(finite_states::LANE_CHANGE_RIGHT);
+                        }
+                    }
+                    //else just decrease velocity
+
+                    unsafe_moves.clear(); //clean possible maneuvers
+                }
+            }
 
         public:
-            //constants
+            /* constants */
             static constexpr double MAX_VELOCITY = 49.5;    //reference velocity - mph
             static const int HORIZON = 50;                  //horizon - distance captured by sensors (in meters)
             static const int LANES = 3;                     //number of lanes
 
-            //start functions
+            /* start functions*/
+
             PathPlaning(){
                 this->lane = 1;
-                this->gap_to_change_lane = 0.5 * HORIZON;   //gap is in both directions - front and back
-                this->velocity = 0;
+                this->gap_to_change_lane = 0.4 * HORIZON;   //gap is in both directions - front and back
+                this->velocity = 45;
 
                 this->too_close = false;
                 this->lane_velocity = PathPlaning::MAX_VELOCITY;
                 this->wait_to_change_lane = 0;
-                possible_moves.clear();
+
+                this->unsafe_moves.clear();
+                this->front_cars.clear();
             }
 
             void start(){
@@ -79,7 +198,8 @@ namespace plan{
                 }
             }
 
-            //getters and setters
+            /* getters and setters */
+
             int getLane(){
                 return this->lane;
             }
@@ -100,7 +220,7 @@ namespace plan{
                 this->car = car_data;
             }
 
-            //helper functions
+            /* helper functions */
             double decreaseVelocity(){
                 this->velocity -= 0.448;	//10 m/(s^2)
             }
@@ -149,94 +269,13 @@ namespace plan{
                 return false;
             }
 
-            //control functions
+            /* control functions */
             void checkLane(nlohmann::basic_json<>::value_type sensor_fusion, int prev_size){
-                //find other cars using sensors
-                for(int i=0; i< sensor_fusion.size(); i++){
-                    Car next_car;
-                    next_car.Fill(sensor_fusion[i], prev_size);
-                    double distance = (next_car.s - car.s);
+                //control the car in current lane (define best velocity, decide to change lane)
+                this->currentLaneControl(sensor_fusion, prev_size);
 
-                    //check car is in my current lane
-                    if(this->isItInMyLane(next_car.d)){
-                        //if the next car is in front of me
-                        if(distance > 0 && distance < PathPlaning::HORIZON)
-                        {
-                            //if my car it's too close from the front car, decrease velocity
-                            if(distance < this->gap_to_change_lane){
-                                this->decreaseVelocity();
-                            }
-
-                            //prepare to change lane
-                            if(this->machine.get() == finite_states::LANE_KEEP){
-                                this->machine.next();
-                                this->lane_velocity = next_car.velocity;
-                                break;
-                            }
-                            else if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE){
-                                this->lane_velocity = next_car.velocity;
-                                break;
-                            }
-                        }
-                    }
-                }
-                
-                //find possible moves if there is a car in front of my car
-                if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE){
-                    for(int i=0; i< sensor_fusion.size(); i++){
-                        Car next_car;
-                        next_car.Fill(sensor_fusion[i], prev_size);
-                        double distance = (next_car.s - car.s);
-
-                        if(this->isItInMyLeftLane(next_car.d)){
-                            if(this->canMoveLeft()){
-                                if(abs(distance) < this->gap_to_change_lane){  //if is not enough space to change lanes
-                                    possible_moves.push_back(Move(true, distance));
-                                }
-                            }
-                        }
-                        else if(this->isItInMyRightLane(next_car.d)){
-                            if(this->canMoveRight()){
-                                if(abs(distance) < this->gap_to_change_lane){  //if is not enough space to change lanes
-                                    possible_moves.push_back(Move(false, distance));
-                                }
-                            }
-                        }
-                    }
-                }
-
-                //if it's possible some maneuver, prefer left than right
-                if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE && possible_moves.size() == 0){ //no problems to move
-                    if(this->moveToLeft()){
-                        this->machine.next(finite_states::LANE_CHANGE_LEFT);
-                    }
-                }
-                else if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE && possible_moves.size() > 0){
-                    bool go_left = true;
-                    bool go_right = true;
-
-                    for (list<Move>::iterator it= possible_moves.begin(); it != possible_moves.end(); ++it){
-                        if(it->toLeft) 
-                            go_left = false;
-                        else
-                            go_right = false;
-                    }
-
-                    //verify if can move left or right then proceed move
-                    if(go_left){
-                        if(this->moveToLeft()){     //possible to move left
-                            this->machine.next(finite_states::LANE_CHANGE_LEFT); 
-                        }
-                    }
-                    else if(go_right){
-                        if(this->moveToRight()){     //possible to move right
-                            this->machine.next(finite_states::LANE_CHANGE_RIGHT);
-                        }
-                    }
-                    //else just decrease velocity
-
-                    possible_moves.clear(); //clean possible maneuvers
-                }
+                //find possible moves (change lane)
+                this->changeLaneControl(sensor_fusion, prev_size);
             }
 
             void doActions(){
