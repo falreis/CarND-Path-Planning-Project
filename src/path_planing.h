@@ -60,9 +60,7 @@ namespace plan{
             double velocity;            //current velocity in mph
             int gap_to_change_lane;     //gap size needed to change lanes
             
-            bool too_close;
-			double lane_velocity;
-            int wait_to_change_lane;    //time to change to the next
+			double lane_velocity;       //max lane velocity (for traffic circunstances)
         
         protected:
             /* control functions */
@@ -182,11 +180,8 @@ namespace plan{
             PathPlaning(){
                 this->lane = 1;
                 this->gap_to_change_lane = 0.4 * HORIZON;   //gap is in both directions - front and back
-                this->velocity = 45;
-
-                this->too_close = false;
+                this->velocity = 0;
                 this->lane_velocity = PathPlaning::MAX_VELOCITY;
-                this->wait_to_change_lane = 0;
 
                 this->unsafe_moves.clear();
                 this->front_cars.clear();
