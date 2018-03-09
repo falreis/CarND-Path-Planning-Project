@@ -22,6 +22,7 @@ namespace fsm{
         public:
             FSMachine(){
                 this->curr_state = finite_states::READY;
+                this->printState();
             }
 
             finite_states get(){
@@ -56,7 +57,7 @@ namespace fsm{
                         return false;   //invalid state
                 }
 
-                std::cout<<this->curr_state<<std::endl;
+                this->printState();
                 return true;
             }
 
@@ -79,7 +80,7 @@ namespace fsm{
                         return false;   //invalid state
                 }
 
-                std::cout<<this->curr_state<<std::endl;
+                this->printState();
                 return true;
             }
 
@@ -95,8 +96,43 @@ namespace fsm{
                         return false;   //invalid state
                 }
 
-                std::cout<<this->curr_state<<std::endl;
+                this->printState();
                 return true;
+            }
+
+            void printState(){
+                string state_name;
+
+                switch(this->curr_state){
+                    case finite_states::READY:
+                        state_name = "READY";
+                        break;
+
+                    case finite_states::LANE_KEEP:
+                        state_name = "LANE_KEEP";
+                        break;
+
+                    /*case finite_states::PREPARE_LANE_CHANGE_LEFT:
+                        state_name = "PREPARE_LANE_CHANGE_LEFT";
+                        break;*/
+
+                    case finite_states::LANE_CHANGE_LEFT:
+                        state_name = "LANE_CHANGE_LEFT";
+                        break;
+
+                    /*case finite_states::PREPARE_LANE_CHANGE_RIGHT:
+                        return "PREPARE_LANE_CHANGE_RIGHT";
+                        break;*/
+                    case finite_states::LANE_CHANGE_RIGHT:
+                        state_name = "LANE_CHANGE_RIGHT";
+                        break;
+
+                    case finite_states::PREPARE_LANE_CHANGE:
+                        state_name = "PREPARE_LANE_CHANGE";
+                        break;
+                }
+                
+                std::cout<<state_name<<std::endl;
             }
     };
 }
