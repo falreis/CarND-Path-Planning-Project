@@ -1,3 +1,6 @@
+[//]: # (Image References)
+[image1]: ./img/finite_states.png "Finite States"
+
 # CarND-Path-Planning-Project
 Self-Driving Car Engineer Nanodegree Program
 
@@ -18,7 +21,17 @@ When the situation is known, controller can decide how to drive, the moment to e
 
 ### Finite State Machine
 
+Finite State Machine was implemented in the class ***FSMachine***, inside ***fsm*** namespace. *FSMachine* control transition over the possible states (created as an enum structure ***finite_states***).
+
+![Finite states and possible transitions][image1]
+
+Differently from course classes, I decided to join "Prepare to Change Lane Left" and "Prepare to Change Lane Right" into just one state, that can decide to change left or right, if it's is possible. This solutions was better once I don't prepare the car to change lane, going to the side of the lane. This state only indicates that's the car is looking for an oportunity to pass the car in front, or decrease velocity if there's no change oportunities.
+
 ### Path Control
+
+Path control is responsibility of ***PathPlanning*** class. This class control the current car. It has a finite state machine *FSMachine*, described above, that indicates the current state of the vehicle. The class also contains information about the vehicle as its velocity, current lane and sensor information (about other vehicles).
+
+The class get information about all environment and decide what is the best decision to make - keep lane, prepare to change lane, change lane, increase or decrease velocity. This class should control the moviments of the car, keeping safety. Once a maneuver is completed, ***PathPlanning*** class send a transition order to finite state machine controller, to keep information about the vehicle updated.
 
 ### Keep Lane and Adjust velocity
 
