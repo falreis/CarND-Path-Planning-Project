@@ -33,6 +33,15 @@ Path control is responsibility of ***PathPlanning*** class. This class control t
 
 The class get information about all environment and decide what is the best decision to make - keep lane, prepare to change lane, change lane, increase or decrease velocity. This class should control the moviments of the car, keeping safety. Once a maneuver is completed, ***PathPlanning*** class send a transition order to finite state machine controller, to keep information about the vehicle updated.
 
-### Keep Lane and Adjust velocity
+### Possible maneuvers
 
-### Change Lane
+After *Ready* state, the go to the *Keep Lane* state. In this state, the vehicle tries to move in the maximum allowed velocity for the road/lane. It keeps in the lane if there is no maneuver predicted.
+
+If there's a car in front of the vehicle, moving in a lower velocity than car's current speed, the path planning control tries to change lane. The following operations is done by the algorithm:
+1. change the finite state to *Prepare to change lane*;
+1. if change to the left lane is possible, change state to *Change Left* and proceed maneuver;
+1. else, try to turn into right lane;
+   1. if change to the right lane is possible, change state to *Change Right* and proceed maneuver;
+   1. else, reduce velocity to the same as the front car and wait until it's possible to change lane (back to item 2);
+
+After proceed an maneuver, the algorithm returns to the state *Keep Lane* and go tries again to run near the maximum velocity available for the lane. The algorithm then starts again.
