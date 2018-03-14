@@ -44,4 +44,6 @@ If there's a car in front of the vehicle, moving at a lower velocity than car's 
    1. if change to the right lane is possible, change state to *Change Right* and proceed maneuver;
    1. else, reduce velocity to the same as the front car and wait until it's possible to change lane (back to item 2);
 
+Completing the described algorithm, before proceed any maneuver, the algorithm evaluates if change is a good option. Change lane to other where the car is near the current lead car is not a good option.
+
 After proceeding a maneuver, the algorithm returns to the state *Keep Lane* and go tries again to run near the maximum velocity available for the lane. The algorithm then starts again.
