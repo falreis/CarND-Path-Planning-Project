@@ -26,7 +26,7 @@ namespace plan{
             this->velocity = this->speed * 2.23;
             
             this->s = sensor_fusion[5];
-            this->s += ((double) prev_size * 0.02 * this->speed);
+            //this->s += ((double) prev_size * 0.02 * this->speed);
         }
     };
 
@@ -58,13 +58,14 @@ namespace plan{
 
             int lane;                   //started lane
             double velocity;            //current velocity in mph
-            int gap_to_change_lane;     //gap size needed to change lanes
             
 			double lane_velocity;       //max lane velocity (for traffic circunstances)
+            double wait_time_maneuver;  //waiting time until finish maneuver
+            double gap_to_change_lane;  //gap size needed to change lanes
+            double front_car_distance;  //front car distance
         
         protected:
             /* control functions */
-
             void currentLaneControl(nlohmann::basic_json<>::value_type sensor_fusion, int prev_size){
                 //find other cars using sensors
                 for(int i=0; i< sensor_fusion.size(); i++){
@@ -100,8 +101,9 @@ namespace plan{
 
                     //if my car it's too close from the front car, decrease velocity
                     if(front_car.distance < PathPlaning::HORIZON){
-                        this->decreaseVelocity();
+                        //this->decreaseVelocity();
                         this->lane_velocity = front_car.velocity;
+                        this->front_car_distance = abs(front_car.distance);
                     }
                 }
                 else{
@@ -117,17 +119,20 @@ namespace plan{
                         Car next_car;
                         next_car.Fill(sensor_fusion[i], prev_size);
                         double distance = (next_car.s - car.s);
-
+                            
+                        //verify if sensors detect cars on left or right lanes
                         if(this->isItInMyLeftLane(next_car.d)){
                             if(this->canMoveLeft()){
-                                if(abs(distance) < this->gap_to_change_lane){  //if is not enough space to change lanes
+                                if(!this->isChangeWorth(distance)){    //if is not enough space to change lanes
+                                    cout<<"Left: "<<abs(distance)<<" - "<<PathPlaning::DIST_CHANGE_LANE<< std::endl;
                                     unsafe_moves.push_back(Move(direction::LEFT, distance, next_car.velocity));
                                 }
                             }
                         }
                         else if(this->isItInMyRightLane(next_car.d)){
                             if(this->canMoveRight()){
-                                if(abs(distance) < this->gap_to_change_lane){  //if is not enough space to change lanes
+                                if(!this->isChangeWorth(distance)){  //if is not enough space to change lanes
+                                    cout<<"Right: "<<abs(distance)<<" - "<<PathPlaning::DIST_CHANGE_LANE<< std::endl;
                                     unsafe_moves.push_back(Move(direction::RIGHT, distance, next_car.velocity));
                                 }
                             }
@@ -139,6 +144,9 @@ namespace plan{
                 if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE && unsafe_moves.size() == 0){ //no problems to move
                     if(this->moveToLeft()){
                         this->machine.next(finite_states::LANE_CHANGE_LEFT);
+                    }
+                    else if(this->moveToRight()){
+                        this->machine.next(finite_states::LANE_CHANGE_RIGHT);
                     }
                 }
                 else if(this->machine.get() == finite_states::PREPARE_LANE_CHANGE && unsafe_moves.size() > 0){
@@ -164,9 +172,9 @@ namespace plan{
                         }
                     }
                     //else just decrease velocity
-
-                    unsafe_moves.clear(); //clean possible maneuvers
                 }
+
+                unsafe_moves.clear(); //clean possible maneuvers
             }
 
         public:
@@ -174,14 +182,16 @@ namespace plan{
             static constexpr double MAX_VELOCITY = 49.5;    //reference velocity - mph
             static const int HORIZON = 50;                  //horizon - distance captured by sensors (in meters)
             static const int LANES = 3;                     //number of lanes
+            static const int DIST_CHANGE_LANE = 10;         //gap size needed to change lanes
 
             /* start functions*/
 
             PathPlaning(){
                 this->lane = 1;
-                this->gap_to_change_lane = 0.4 * HORIZON;   //gap is in both directions - front and back
-                this->velocity = 0;
+                this->velocity = 45;
                 this->lane_velocity = PathPlaning::MAX_VELOCITY;
+                this->wait_time_maneuver = 0;
+                this->front_car_distance = 0;
 
                 this->unsafe_moves.clear();
                 this->front_cars.clear();
@@ -197,10 +207,6 @@ namespace plan{
 
             int getLane(){
                 return this->lane;
-            }
-
-            int getGap(){
-                return this->gap_to_change_lane;
             }
 
             double getVelocity(){
@@ -224,6 +230,11 @@ namespace plan{
                 this->velocity += 0.448;	//10 m/(s^2)
             }
 
+            bool amIInLane(){
+                float pos = (this->car.d / (this->lane*4.0));
+                return (pos > 0.3 && pos < 0.7);
+            }
+
             bool isItInLane(float d, int ref_lane){
                 return (d < (2+(4*ref_lane)+2)) && (d > (2+(4*ref_lane)-2));
             }
@@ -238,6 +249,17 @@ namespace plan{
 
             bool isItInMyRightLane(float d){
                 return isItInLane(d, (this->lane+1));
+            }
+
+            bool isChangeWorth(int distance){
+                //TODO: verificar se os sensores não estão retornando carros em outra direção
+                if(this->front_car_distance > 0){
+                    if(distance < 0)
+                        return abs(distance) > PathPlaning::DIST_CHANGE_LANE;
+                    else
+                        return (abs(distance) > PathPlaning::DIST_CHANGE_LANE && distance > this->front_car_distance);
+                }
+                return true;
             }
 
             bool canMoveLeft(){
@@ -270,7 +292,13 @@ namespace plan{
                 this->currentLaneControl(sensor_fusion, prev_size);
 
                 //find possible moves (change lane)
-                this->changeLaneControl(sensor_fusion, prev_size);
+                if(this->wait_time_maneuver <= 0){
+                //if(this->amIInLane()){
+                    this->changeLaneControl(sensor_fusion, prev_size);
+                }
+                else{
+                    this->wait_time_maneuver--;  
+                }
             }
 
             void doActions(){
@@ -285,6 +313,8 @@ namespace plan{
                     case finite_states::LANE_CHANGE_LEFT:
                     case finite_states::LANE_CHANGE_RIGHT:
                         this->machine.next();       //back to lane keep
+                        this->wait_time_maneuver = PathPlaning::HORIZON;
+                        this->front_car_distance = 0;
                         break;
 
                     case finite_states::PREPARE_LANE_CHANGE:
